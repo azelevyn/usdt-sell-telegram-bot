@@ -102,6 +102,7 @@ function calculateFiatAmount(usdtAmount, fiatCurrency) {
 
 /**
  * Generates the prompt for payment details based on the selected method.
+ * NOTE: This function is primarily used for non-bank transfer methods now.
  * @param {string} method The selected payment method (e.g., 'Wise', 'Skrill', 'Neteller').
  * @returns {string} The instructional text for the user.
  */
@@ -110,7 +111,7 @@ function getPaymentDetailsPrompt(method) {
         'Wise': 'Please enter your **Wise email address** or **Wise Tag**.',
         'Revolut': 'Please enter your **Revolut Revtag**.',
         'PayPal': 'Please enter your **PayPal email address**.',
-        'Bank Transfer': 'Please provide your **bank account details (IBAN)**.',
+        'Bank Transfer': 'Please provide your bank account details (IBAN).', // This prompt is overridden by region selection
         'Skrill': 'Please enter your **Skrill email address**.',
         'Neteller': 'Please enter your **Neteller email address**.',
         'Visa/Mastercard': 'Please enter your **Visa/Mastercard number**.\n\n⚠️ *For security, never share your full card details with untrusted parties. This is for demonstration purposes only.*',
@@ -432,14 +433,69 @@ Please select your preferred fiat currency:
             });
             return; 
         }
+
+        if (method === 'Bank Transfer') {
+            // New logic: Ask for region
+            state.step = 'awaiting_bank_region';
+            bot.sendMessage(chatId, 'Is this bank account for a **European (IBAN/SWIFT)** or **US (Routing/Account)** transfer?', {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '🇪🇺 European Bank', callback_data: 'region_EUR' }],
+                        [{ text: '🇺🇸 US Bank', callback_data: 'region_US' }],
+                    ],
+                },
+            });
+            return;
+        }
         
-        // This handles all specific methods (Wise, PayPal, Skrill, Neteller, etc.)
+        // This handles all specific methods *except* Bank Transfer and Skrill/Neteller sub-menu
         state.paymentMethod = method;
         state.step = 'awaiting_payment_details';
         const prompt = getPaymentDetailsPrompt(method);
         bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
         return;
     }
+
+    // --- NEW STEP: AWAITING BANK REGION ---
+    if (data.startsWith('region_')) {
+        if (!state || state.step !== 'awaiting_bank_region') return;
+
+        const region = data.split('_')[1];
+        state.step = 'awaiting_payment_details';
+        
+        if (region === 'EUR') {
+            state.paymentMethod = 'European Bank Transfer';
+            const prompt = `
+*Please provide your European bank account details:*
+
+\`Your First and Last Name\`
+\`IBAN\`
+\`SWIFT CODE\`
+
+Please send all three fields in a single message.
+            `;
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        } else if (region === 'US') {
+            state.paymentMethod = 'US Bank Transfer';
+            const prompt = `
+*Please provide your US bank account details:*
+
+\`Your First and Last Name\`
+\`Routing Number\`
+\`Account Number\`
+
+Please send all three fields in a single message.
+            `;
+            bot.sendMessage(chatId, prompt, { parse_mode: 'Markdown' });
+        } else {
+             // Fallback, though should not happen
+            bot.sendMessage(chatId, '⚠️ Invalid selection. Please try again or cancel the transaction.');
+            delete userState[chatId];
+        }
+        return;
+    }
+
 
     // --- STEP: FINAL TRANSACTION CONFIRMATION ---
     if (data === 'confirm_tx_yes') {
@@ -575,7 +631,9 @@ bot.on('message', async (msg) => {
 - *Receiving:* \`${fiatAmount} ${state.fiat}\`
 - *Rate Used:* \`1 USDT = ${finalRate} ${state.fiat}\`
 - *Payment Method:* \`${state.paymentMethod}\`
-- *Your Details:* \`${state.paymentDetails}\`
+- *Your Details:* \`\`\`
+${state.paymentDetails}
+\`\`\`
 ---
 *Please review all details carefully. Are you sure you want to proceed and generate the deposit address?*
         `;
