@@ -16,7 +16,7 @@ const MIN_WITHDRAW_REF = 50.00; // Minimum USDT required to withdraw earnings
 const MIN_RATES = {
     USD: 1.05,
     EUR: 0.89,
-    GBP: 0.79, // Updated from 0.78 to 0.79 as requested
+    GBP: 0.79,
 };
 
 let currentRates = {}; // Holds the current simulated dynamic rates
@@ -30,13 +30,19 @@ const coinpayments = new CoinPayments({
     secret: process.env.COINPAYMENTS_PRIVATE_KEY,
 });
 
+// --- IN-MEMORY DATA STORES (Replace with Firestore in Production) ---
+
 // In-memory store for user conversation state
 const userState = {};
 
 // In-memory store for referral and earnings data
-// NOTE: For a production bot, this must be replaced with a persistent database (e.g., Firestore).
 const referralData = {
     // Example structure: [userId]: { earnings: 0.0, referredBy: null, isRegistered: false, name: '' }
+};
+
+// In-memory store for bot's outgoing payment methods (Admin Configuration)
+const adminConfig = {
+    // Example structure: 'Wise': 'wise-account@bot-email.com',
 };
 
 // --- HELPER FUNCTIONS ---
@@ -102,7 +108,6 @@ function calculateFiatAmount(usdtAmount, fiatCurrency) {
 
 /**
  * Generates the prompt for payment details based on the selected method.
- * NOTE: This function is primarily used for non-bank transfer methods now.
  * @param {string} method The selected payment method (e.g., 'Wise', 'Skrill', 'Neteller').
  * @returns {string} The instructional text for the user.
  */
@@ -193,7 +198,7 @@ Let's begin! Please use the menu buttons below to navigate the service.
     bot.sendMessage(chatId, welcomeMessage, {
         parse_mode: 'Markdown',
         reply_markup: {
-            keyboard: [['📊 Dashboard', '💰 SELL USDT'], ['🔗 Referral']], // UPDATED BUTTON NAME
+            keyboard: [['📊 Dashboard', '💰 SELL USDT'], ['🔗 Referral']], 
             resize_keyboard: true,
             one_time_keyboard: false,
         },
@@ -274,7 +279,7 @@ When your friends click this link and start the bot, you will automatically rece
     });
 });
 
-// Handler for Admin Command
+// Handler for Admin Command (UPDATED)
 bot.onText(/\/admin/, (msg) => {
     const chatId = msg.chat.id;
 
@@ -301,6 +306,8 @@ Welcome, Administrator. Select an action:
         reply_markup: {
             inline_keyboard: [
                 [{ text: 'View Payout Requests (Pending)', callback_data: 'admin_payouts' }],
+                [{ text: '👤 Check User Details', callback_data: 'admin_check_user' }],
+                [{ text: '💳 Manage Bot Payout Methods', callback_data: 'admin_manage_methods' }],
                 [{ text: 'Refresh Rates', callback_data: 'admin_refresh_rates' }],
             ],
         },
@@ -330,18 +337,60 @@ bot.on('callback_query', async (query) => {
     // Acknowledge the button press
     bot.answerCallbackQuery(query.id);
 
-    // --- ADMIN CALL BACKS ---
-    if (data === 'admin_refresh_rates' && chatId.toString() === ADMIN_CHAT_ID) {
-        getRealTimeRates();
-        bot.sendMessage(chatId, `✅ Rates refreshed! New rates:\nUSD: ${currentRates.USDT_TO_USD}\nEUR: ${currentRates.USDT_TO_EUR}\nGBP: ${currentRates.USDT_TO_GBP}`);
-        return;
+    // --- ADMIN CALL BACKS (Expanded) ---
+    if (chatId.toString() === ADMIN_CHAT_ID) {
+        if (data === 'admin_refresh_rates') {
+            getRealTimeRates();
+            bot.sendMessage(chatId, `✅ Rates refreshed! New rates:\nUSD: ${currentRates.USDT_TO_USD}\nEUR: ${currentRates.USDT_TO_EUR}\nGBP: ${currentRates.USDT_TO_GBP}`);
+            return;
+        }
+        
+        if (data === 'admin_payouts') {
+            bot.sendMessage(chatId, 'Pending payout requests are currently only logged to the console/admin chat. Integration with a database is required to view a full list here.');
+            return;
+        }
+
+        if (data === 'admin_main_menu') {
+            bot.handleText(/\/admin/)(query.message);
+            return;
+        }
+
+        if (data === 'admin_check_user') {
+            userState[chatId] = { step: 'awaiting_admin_user_id' };
+            bot.sendMessage(chatId, 'Please enter the **Telegram User ID** you wish to lookup:', { parse_mode: 'Markdown' });
+            return;
+        }
+
+        if (data === 'admin_manage_methods') {
+            const methodsList = Object.keys(adminConfig).length > 0
+                ? Object.keys(adminConfig).map(key => `- *${key}*`).join('\n')
+                : '*No outgoing payment methods configured.*';
+
+            const message = `
+*💳 Configured Payout Methods*
+
+${methodsList}
+    `;
+
+            bot.sendMessage(chatId, message, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '➕ Add New Payout Method', callback_data: 'admin_add_method_init' }],
+                        [{ text: '⬅️ Back to Admin Panel', callback_data: 'admin_main_menu' }],
+                    ],
+                },
+            });
+            return;
+        }
+
+        if (data === 'admin_add_method_init') {
+            userState[chatId] = { step: 'awaiting_admin_method_name' };
+            bot.sendMessage(chatId, 'What is the **name** of the new payout method (e.g., Wise, US Bank, etc.)?', { parse_mode: 'Markdown' });
+            return;
+        }
     }
-    
-    if (data === 'admin_payouts' && chatId.toString() === ADMIN_CHAT_ID) {
-        // In a real application, this would fetch pending withdrawal requests from a database.
-        bot.sendMessage(chatId, 'Pending payout requests are currently only logged to the console/admin chat. Integration with a database is required to view a full list here.');
-        return;
-    }
+    // --- END ADMIN CALLBACKS ---
 
     // --- TRANSACTION CANCELLATION/INITIATION ---
     if (data === 'sell_usdt_yes') {
@@ -505,7 +554,7 @@ Please send all three fields in a single message.
             return;
         }
 
-        // CoinPayments Generation Logic (moved from the 'message' handler)
+        // CoinPayments Generation Logic 
         try {
             const options = {
                 currency1: 'USDT',
@@ -556,7 +605,69 @@ bot.on('message', async (msg) => {
     if (!userState[chatId] || !userState[chatId].step) return;
 
     const state = userState[chatId];
+    
+    // --- ADMIN Message Handlers (NEW) ---
+    if (chatId.toString() === ADMIN_CHAT_ID && state) {
+        if (state.step === 'awaiting_admin_user_id') {
+            const targetUserId = parseInt(msg.text.trim(), 10);
+            
+            if (isNaN(targetUserId)) {
+                bot.sendMessage(chatId, '⚠️ Invalid input. Please enter a numerical Telegram User ID.');
+                return;
+            }
 
+            const userData = referralData[targetUserId];
+
+            if (userData) {
+                const userDetails = `
+*👤 User Details for ID \`${targetUserId}\`*
+*Name:* ${userData.name}
+*Registered:* ${userData.isRegistered ? 'Yes' : 'No'}
+*Referral Earnings:* ${userData.earnings.toFixed(2)} USDT
+*Referred By ID:* ${userData.referredBy || 'N/A'}
+                `;
+                bot.sendMessage(chatId, userDetails, { parse_mode: 'Markdown' });
+            } else {
+                bot.sendMessage(chatId, `❌ User ID \`${targetUserId}\` not found in memory.`);
+            }
+            delete userState[chatId];
+            return;
+        }
+
+        if (state.step === 'awaiting_admin_method_name') {
+            const methodName = msg.text.trim();
+            if (methodName.length < 3) {
+                 bot.sendMessage(chatId, '⚠️ Method name is too short. Please enter a descriptive name (e.g., Wise, US Bank).');
+                 return;
+            }
+            state.newMethodName = methodName;
+            state.step = 'awaiting_admin_method_details';
+            bot.sendMessage(chatId, `Got it. The method is **${state.newMethodName}**.\n\nNow, please send the **full account details** for this method (e.g., IBAN/SWIFT, email, account number).`, { parse_mode: 'Markdown' });
+            return;
+        }
+
+        if (state.step === 'awaiting_admin_method_details') {
+            const details = msg.text.trim();
+            const methodName = state.newMethodName;
+            
+            adminConfig[methodName] = details;
+            
+            const successMessage = `
+✅ **Payout Method Added!**
+
+*Method Name:* \`${methodName}\`
+*Details Stored:*
+\`\`\`
+${details}
+\`\`\`
+            `;
+            bot.sendMessage(chatId, successMessage, { parse_mode: 'Markdown' });
+            delete userState[chatId];
+            return;
+        }
+    }
+    // --- END ADMIN Message Handlers ---
+    
     // --- Referral Withdrawal Processing ---
     if (state.step === 'awaiting_ref_withdraw_details') {
         const walletAddress = msg.text.trim();
