@@ -21,13 +21,13 @@ const coinpayments = new CoinPayments({
     secret: process.env.COINPAYMENTS_PRIVATE_KEY,
 });
 
-// Exchange Rates (as provided)
+// --- UPDATED EXCHANGE RATES ---
+// Rates are now defined directly from USDT to fiat.
 const RATES = {
-    USDT_TO_USD: 1 / 1.08, // Derived from USD to USDT: 1.08
-    USD_TO_EUR: 0.89,
-    USDT_TO_GBP: 0.77,
+    USDT_TO_USD: 1.05,
+    USDT_TO_EUR: 0.89,
+    USDT_TO_GBP: 0.78,
 };
-RATES.USDT_TO_EUR = RATES.USDT_TO_USD * RATES.USD_TO_EUR;
 
 // In-memory store for user conversation state
 const userState = {};
@@ -55,7 +55,7 @@ function ensureReferralData(userId) {
 }
 
 /**
- * Calculates the final fiat amount the user will receive.
+ * Calculates the final fiat amount the user will receive using the direct rates.
  * @param {number} usdtAmount The amount of USDT being sold.
  * @param {string} fiatCurrency The target fiat currency ('USD', 'EUR', 'GBP').
  * @returns {string} The formatted fiat amount.
@@ -121,10 +121,8 @@ bot.onText(/\/start\s?(.+)?/, (msg, match) => {
                 if (!referralData[chatId].isRegistered) {
                     referralData[chatId].referredBy = referrerId;
                     
-                    // The bonus is credited on first interaction, not on a completed sale
+                    // The bonus is credited on first interaction
                     referralData[referrerId].earnings += REFERRAL_BONUS; 
-                    
-                    const referrerName = referralData[referrerId].name || referrerId;
                     
                     // Notify the referrer
                     bot.sendMessage(referrerId, `🎉 **Referral Success!**\n\nUser ${fullUserName} has joined using your link. You earned **${REFERRAL_BONUS.toFixed(2)} USDT**! Your new total earnings are: **${referralData[referrerId].earnings.toFixed(2)} USDT**.`, { parse_mode: 'Markdown' });
@@ -158,48 +156,67 @@ bot.onText(/\/start\s?(.+)?/, (msg, match) => {
     const welcomeMessage = `
 *Welcome to the USDT Selling Bot!* 🤖
 
-This bot allows you to securely sell your USDT for fiat currency (USD, EUR, GBP) using a variety of payment methods.
-
-Hello *${fullUserName}*!
-
-To begin a transaction, please use the **MENU** button. To check your referral earnings, use the **Referral** command.
+Hello *${fullUserName}*! Use the menu below to navigate the bot.
     `;
 
     bot.sendMessage(chatId, welcomeMessage, {
         parse_mode: 'Markdown',
         reply_markup: {
-            keyboard: [['MENU'], ['Referral']],
+            keyboard: [['📊 Dashboard', '💳 Wallet'], ['🔗 Referral']],
             resize_keyboard: true,
             one_time_keyboard: false,
         },
     });
 });
 
-
-// Handler for the "MENU" button
-bot.onText(/MENU/, (msg) => {
+// Handler for the "Dashboard" button
+bot.onText(/📊 Dashboard/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'Do you want to sell USDT?', {
+    ensureReferralData(chatId);
+
+    const ratesText = `
+*📊 Exchange Dashboard*
+
+*Your Telegram ID:* \`${chatId}\`
+*Referral Earnings:* **${referralData[chatId].earnings.toFixed(2)} USDT**
+
+---
+*Current Exchange Rates:*
+1 USDT = **${RATES.USDT_TO_USD.toFixed(2)} USD**
+1 USDT = **${RATES.USDT_TO_EUR.toFixed(2)} EUR**
+1 USDT = **${RATES.USDT_TO_GBP.toFixed(2)} GBP**
+
+To sell USDT, please use the *💳 Wallet* menu.
+    `;
+
+    bot.sendMessage(chatId, ratesText, { parse_mode: 'Markdown' });
+});
+
+// Handler for the "Wallet" button (Initiates transaction flow)
+bot.onText(/💳 Wallet/, (msg) => {
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId, 'This is your transaction wallet. Do you want to sell USDT now?', {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '✅ YES', callback_data: 'sell_usdt_yes' }],
-                [{ text: '❌ NO', callback_data: 'sell_usdt_no' }],
+                [{ text: 'Sell USDT & Get Fiat', callback_data: 'sell_usdt_yes' }],
+                [{ text: 'Cancel', callback_data: 'sell_usdt_no' }],
             ],
         },
     });
 });
 
 // Handler for the "Referral" button or /referral command
-bot.onText(/Referral|\/referral/, (msg) => {
+bot.onText(/🔗 Referral|\/referral/, (msg) => {
     const chatId = msg.chat.id;
     ensureReferralData(chatId);
     
-    const botUsername = 'YourBotUsername'; // Replace with your bot's actual username
+    // NOTE: Replace 'YourBotUsername' with the actual username of your bot
+    const botUsername = 'YourBotUsername'; 
     const referralLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
     const earnings = referralData[chatId].earnings;
     
     const referralMessage = `
-*💰 Your Referral Dashboard*
+*🔗 Your Referral Dashboard*
 
 *Current Earnings:* **${earnings.toFixed(2)} USDT**
 *Minimum Withdrawal:* **${MIN_WITHDRAW_REF.toFixed(2)} USDT**
@@ -221,6 +238,7 @@ When your friends click this link and start the bot, you will automatically rece
         reply_markup: { inline_keyboard: inlineKeyboard }
     });
 });
+
 
 // Handler for referral withdrawal initiation
 bot.onText(/\/withdrawref/, (msg) => {
@@ -246,11 +264,13 @@ bot.on('callback_query', (query) => {
 
     if (data === 'sell_usdt_yes') {
         userState[chatId] = { step: 'awaiting_fiat' };
+        
+        // Use the same rate display as the dashboard for consistency
         const ratesText = `
-*Current Exchange Rates:*
-1 USDT ≈ ${RATES.USDT_TO_USD.toFixed(4)} USD
-1 USDT ≈ ${RATES.USDT_TO_EUR.toFixed(4)} EUR
-1 USDT ≈ ${RATES.USDT_TO_GBP.toFixed(4)} GBP
+*Select Fiat Currency*
+1 USDT = ${RATES.USDT_TO_USD.toFixed(2)} USD
+1 USDT = ${RATES.USDT_TO_EUR.toFixed(2)} EUR
+1 USDT = ${RATES.USDT_TO_GBP.toFixed(2)} GBP
 
 Please select your preferred fiat currency:
         `;
@@ -267,12 +287,13 @@ Please select your preferred fiat currency:
     }
 
     if (data === 'sell_usdt_no') {
-        bot.sendMessage(chatId, 'Understood. Please press MENU whenever you are ready to proceed.');
+        bot.sendMessage(chatId, 'Transaction cancelled. Press *💳 Wallet* to start a new sale.', { parse_mode: 'Markdown' });
         delete userState[chatId];
     }
     
     if (data === 'withdraw_ref_init') {
-        bot.handleText(/\/withdrawref/)(query.message); // Trigger the text handler for withdrawal
+        // Trigger the text handler for withdrawal
+        bot.handleText(/\/withdrawref/)(query.message); 
     }
 
     if (data.startsWith('fiat_')) {
@@ -319,8 +340,8 @@ Please select your preferred fiat currency:
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const fullUserName = `${msg.from.first_name || ''} ${msg.from.last_name || ''}`.trim();
-    // Ignore commands, menu presses, and referral/withdrawref commands
-    if (msg.text.startsWith('/') || msg.text === 'MENU' || msg.text === 'Referral') return;
+    // Ignore commands and menu button presses
+    if (msg.text.startsWith('/') || ['📊 Dashboard', '💳 Wallet', '🔗 Referral'].includes(msg.text)) return;
     if (!userState[chatId] || !userState[chatId].step) return;
 
     const state = userState[chatId];
@@ -329,7 +350,7 @@ bot.on('message', async (msg) => {
     if (state.step === 'awaiting_ref_withdraw_details') {
         const walletAddress = msg.text.trim();
         
-        // Basic validation (e.g., check if it looks like a crypto address, though real validation would be more complex)
+        // Basic validation (e.g., check if it looks like a crypto address)
         if (walletAddress.length < 30) {
             bot.sendMessage(chatId, '⚠️ That doesn\'t look like a valid TRC20 wallet address. Please try again.');
             return;
