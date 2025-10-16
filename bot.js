@@ -6,6 +6,12 @@ const CoinPayments = require('coinpayments');
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const buyerEmail = process.env.BUYER_REFUND_EMAIL;
 
+// Admin Chat ID (MANDATORY: must be a string)
+const ADMIN_CHAT_ID = '6173795597'; 
+// Referral Constants
+const REFERRAL_BONUS = 1.50; // USDT earned per successful referral
+const MIN_WITHDRAW_REF = 50.00; // Minimum USDT required to withdraw earnings
+
 // Initialize Telegram Bot
 const bot = new TelegramBot(token, { polling: true });
 
@@ -26,7 +32,27 @@ RATES.USDT_TO_EUR = RATES.USDT_TO_USD * RATES.USD_TO_EUR;
 // In-memory store for user conversation state
 const userState = {};
 
+// In-memory store for referral and earnings data
+// NOTE: For a production bot, this must be replaced with a persistent database (e.g., Firestore).
+const referralData = {
+    // Example structure: [userId]: { earnings: 0.0, referredBy: null, isRegistered: false }
+};
+
 // --- HELPER FUNCTIONS ---
+
+/**
+ * Ensures a user's referral data entry exists and is initialized.
+ * @param {number} userId The user's chat ID.
+ */
+function ensureReferralData(userId) {
+    if (!referralData[userId]) {
+        referralData[userId] = {
+            earnings: 0.0,
+            referredBy: null,
+            isRegistered: false,
+        };
+    }
+}
 
 /**
  * Calculates the final fiat amount the user will receive.
@@ -71,31 +97,84 @@ function getPaymentDetailsPrompt(method) {
 
 // --- BOT LOGIC ---
 
-// Handler for the /start command
-bot.onText(/\/start/, (msg) => {
+// Handler for the /start command, including deep-linking for referrals
+bot.onText(/\/start\s?(.+)?/, (msg, match) => {
     const chatId = msg.chat.id;
     const firstName = msg.from.first_name || '';
     const lastName = msg.from.last_name || '';
+    const username = msg.from.username ? `@${msg.from.username}` : 'N/A';
+    const fullUserName = `${firstName} ${lastName}`.trim();
 
+    ensureReferralData(chatId);
+    
+    // --- 1. Referral Logic (Deep Linking) ---
+    if (match && match[1]) {
+        const payload = match[1];
+        if (payload.startsWith('ref_')) {
+            const referrerId = parseInt(payload.substring(4), 10);
+            
+            // 1. Check if the referrer ID is valid and not the user themselves
+            if (referrerId && referrerId !== chatId) {
+                ensureReferralData(referrerId);
+                
+                // 2. Only credit the referral if the new user hasn't been registered yet
+                if (!referralData[chatId].isRegistered) {
+                    referralData[chatId].referredBy = referrerId;
+                    
+                    // The bonus is credited on first interaction, not on a completed sale
+                    referralData[referrerId].earnings += REFERRAL_BONUS; 
+                    
+                    const referrerName = referralData[referrerId].name || referrerId;
+                    
+                    // Notify the referrer
+                    bot.sendMessage(referrerId, `🎉 **Referral Success!**\n\nUser ${fullUserName} has joined using your link. You earned **${REFERRAL_BONUS.toFixed(2)} USDT**! Your new total earnings are: **${referralData[referrerId].earnings.toFixed(2)} USDT**.`, { parse_mode: 'Markdown' });
+
+                    // Notify the referred user
+                    bot.sendMessage(chatId, `Welcome! You were referred by user \`${referrerId}\`.`, { parse_mode: 'Markdown' });
+                }
+            }
+        }
+    }
+    
+    // Mark the user as registered after their first start
+    referralData[chatId].isRegistered = true;
+    referralData[chatId].name = fullUserName || username;
+
+    // --- 2. Admin Notification ---
+    const adminNotification = `
+*🚨 NEW USER STARTED BOT*
+*ID:* \`${chatId}\`
+*Name:* ${fullUserName}
+*Username:* ${username}
+*Referred By:* ${referralData[chatId].referredBy || 'None'}
+    `;
+    // Ensure the message is sent successfully, but don't block the user's experience
+    bot.sendMessage(ADMIN_CHAT_ID, adminNotification, { parse_mode: 'Markdown' }).catch(err => {
+        console.error('Failed to notify admin:', err.message);
+    });
+
+
+    // --- 3. User Welcome Message ---
     const welcomeMessage = `
 *Welcome to the USDT Selling Bot!* 🤖
 
 This bot allows you to securely sell your USDT for fiat currency (USD, EUR, GBP) using a variety of payment methods.
 
-Hello *${firstName} ${lastName}*!
+Hello *${fullUserName}*!
 
-To begin, please use the menu below.
+To begin a transaction, please use the **MENU** button. To check your referral earnings, use the **Referral** command.
     `;
 
     bot.sendMessage(chatId, welcomeMessage, {
         parse_mode: 'Markdown',
         reply_markup: {
-            keyboard: [['MENU']],
+            keyboard: [['MENU'], ['Referral']],
             resize_keyboard: true,
-            one_time_keyboard: true,
+            one_time_keyboard: false,
         },
     });
 });
+
 
 // Handler for the "MENU" button
 bot.onText(/MENU/, (msg) => {
@@ -108,6 +187,53 @@ bot.onText(/MENU/, (msg) => {
             ],
         },
     });
+});
+
+// Handler for the "Referral" button or /referral command
+bot.onText(/Referral|\/referral/, (msg) => {
+    const chatId = msg.chat.id;
+    ensureReferralData(chatId);
+    
+    const botUsername = 'YourBotUsername'; // Replace with your bot's actual username
+    const referralLink = `https://t.me/${botUsername}?start=ref_${chatId}`;
+    const earnings = referralData[chatId].earnings;
+    
+    const referralMessage = `
+*💰 Your Referral Dashboard*
+
+*Current Earnings:* **${earnings.toFixed(2)} USDT**
+*Minimum Withdrawal:* **${MIN_WITHDRAW_REF.toFixed(2)} USDT**
+*Bonus per Referral:* **${REFERRAL_BONUS.toFixed(2)} USDT**
+
+*Share this link to earn:*
+\`${referralLink}\`
+
+When your friends click this link and start the bot, you will automatically receive a bonus!
+    `;
+    
+    let inlineKeyboard = [];
+    if (earnings >= MIN_WITHDRAW_REF) {
+        inlineKeyboard.push([{ text: `💸 Withdraw ${earnings.toFixed(2)} USDT`, callback_data: 'withdraw_ref_init' }]);
+    }
+
+    bot.sendMessage(chatId, referralMessage, { 
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+});
+
+// Handler for referral withdrawal initiation
+bot.onText(/\/withdrawref/, (msg) => {
+    const chatId = msg.chat.id;
+    const earnings = referralData[chatId]?.earnings || 0;
+    
+    if (earnings < MIN_WITHDRAW_REF) {
+        bot.sendMessage(chatId, `⚠️ You need at least **${MIN_WITHDRAW_REF.toFixed(2)} USDT** to withdraw. Your current balance is **${earnings.toFixed(2)} USDT**.`, { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    userState[chatId] = { step: 'awaiting_ref_withdraw_details', amount: earnings };
+    bot.sendMessage(chatId, `Great! You are eligible to withdraw **${earnings.toFixed(2)} USDT**.\n\nPlease provide your **USDT TRC20 wallet address** where you would like to receive the funds.`);
 });
 
 // Handler for all inline button clicks (callback queries)
@@ -143,6 +269,10 @@ Please select your preferred fiat currency:
     if (data === 'sell_usdt_no') {
         bot.sendMessage(chatId, 'Understood. Please press MENU whenever you are ready to proceed.');
         delete userState[chatId];
+    }
+    
+    if (data === 'withdraw_ref_init') {
+        bot.handleText(/\/withdrawref/)(query.message); // Trigger the text handler for withdrawal
     }
 
     if (data.startsWith('fiat_')) {
@@ -188,12 +318,49 @@ Please select your preferred fiat currency:
 // Handler for text messages to capture details and amount
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    // Ignore commands and menu presses
-    if (msg.text.startsWith('/') || msg.text === 'MENU') return;
+    const fullUserName = `${msg.from.first_name || ''} ${msg.from.last_name || ''}`.trim();
+    // Ignore commands, menu presses, and referral/withdrawref commands
+    if (msg.text.startsWith('/') || msg.text === 'MENU' || msg.text === 'Referral') return;
     if (!userState[chatId] || !userState[chatId].step) return;
 
     const state = userState[chatId];
 
+    // --- Referral Withdrawal Processing ---
+    if (state.step === 'awaiting_ref_withdraw_details') {
+        const walletAddress = msg.text.trim();
+        
+        // Basic validation (e.g., check if it looks like a crypto address, though real validation would be more complex)
+        if (walletAddress.length < 30) {
+            bot.sendMessage(chatId, '⚠️ That doesn\'t look like a valid TRC20 wallet address. Please try again.');
+            return;
+        }
+
+        const withdrawalAmount = state.amount;
+        
+        // Log withdrawal request for admin to manually process
+        const adminWithdrawalRequest = `
+*💸 REFERRAL WITHDRAWAL REQUEST*
+*User:* ${fullUserName} (\`${chatId}\`)
+*Amount:* **${withdrawalAmount.toFixed(2)} USDT**
+*Wallet Address (TRC20):* \`${walletAddress}\`
+*Status:* PENDING MANUAL REVIEW
+        `;
+        
+        bot.sendMessage(ADMIN_CHAT_ID, adminWithdrawalRequest, { parse_mode: 'Markdown' }).then(() => {
+            // Deduct earnings and confirm to user
+            referralData[chatId].earnings = 0; // Reset earnings after request
+            
+            bot.sendMessage(chatId, `✅ Withdrawal request for **${withdrawalAmount.toFixed(2)} USDT** has been submitted to the admin.\n\nFunds will be sent to your TRC20 address (\`${walletAddress}\`) shortly. Your referral balance is now **0.00 USDT**.`);
+            delete userState[chatId];
+        }).catch(err => {
+            console.error('Failed to notify admin of withdrawal:', err.message);
+            bot.sendMessage(chatId, '❌ An error occurred while submitting your withdrawal request. Please try again later.');
+        });
+        
+        return; // Exit if referral withdrawal was processed
+    }
+    
+    // --- Fiat Transaction Processing ---
     if (state.step === 'awaiting_payment_details') {
         state.paymentDetails = msg.text;
         state.step = 'awaiting_amount';
