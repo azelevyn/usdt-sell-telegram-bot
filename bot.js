@@ -473,7 +473,7 @@ To complete the transaction, please send exactly \`${result.amount}\` USDT to th
 
 This address is valid for *${Math.round(result.timeout / 3600)} hours*. Do not send funds after it has expired.
 
-Once your deposit is confirmed, we will process your fiat payment.
+Once your deposit is confirmed, the payout will proceed automatically, and you can expect to receive your funds within **5 minutes**.
             `;
             // Send the main message with the QR code
             bot.sendPhoto(chatId, result.qrcode_url, {
@@ -577,7 +577,7 @@ bot.on('message', async (msg) => {
 - *Payment Method:* \`${state.paymentMethod}\`
 - *Your Details:* \`${state.paymentDetails}\`
 ---
-*Please review all details carefully. Are you sure you want to proceed and generate the CoinPayments deposit address?*
+*Please review all details carefully. Are you sure you want to proceed and generate the deposit address?*
         `;
         
         bot.sendMessage(chatId, summary, { 
